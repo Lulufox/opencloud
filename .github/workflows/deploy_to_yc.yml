@@ -34,13 +34,21 @@ jobs:
     outputs:
       container_status: ${{ steps.get_status.outputs.status }}
     steps:
+    - uses: actions/checkout@v3  # Добавляем checkout здесь
+    - name: Verify compose file exists
+      run: |
+        if [ ! -f "docker-compose.yml" ]; then
+            echo "::error::docker-compose.yml not found in repository!"
+            exit 1
+        fi
+    
     - name: Copy compose files
       uses: appleboy/scp-action@master
       with:
         host: ${{ secrets.HOST }}
         username: ${{ secrets.USER }}
         key: ${{ secrets.SSH_KEY }}
-        source: "docker-compose.yml"
+        source: "deployments/examples/opencloud_full/docker-compose.yml"
         target: "opencloud/"
     
     - name: Deploy containers
@@ -64,12 +72,6 @@ jobs:
             
             # Cleanup unused images
             sudo docker image prune -af || true
-            
-            # Verify compose file
-            if [ ! -f docker-compose.yml ]; then
-                echo "::error::docker-compose.yml not found!"
-                exit 1
-            fi
             
             sudo docker compose pull --quiet
             sudo docker compose up -d --build
