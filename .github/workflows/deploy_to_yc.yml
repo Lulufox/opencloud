@@ -34,6 +34,7 @@ jobs:
     outputs:
       container_status: ${{ steps.get_status.outputs.status }}
     steps:
+    - uses: actions/checkout@v3 
     - name: Copy compose files
       uses: appleboy/scp-action@master
       with:
