@@ -42,7 +42,7 @@ jobs:
         username: ${{ secrets.USER }}
         key: ${{ secrets.SSH_KEY }}
         source: "deployments/examples/opencloud_full/docker-compose.yml"
-        target: "opencloud/"
+        target: "opencloud/docker-compose.yml"
     
     - name: Deploy containers
       uses: appleboy/ssh-action@master
@@ -104,7 +104,7 @@ jobs:
         token: ${{ secrets.TELEGRAM_TOKEN }}
         format: markdown
         message: |
-          *${{ github.workflow }}* - ${{ github.workflow.status }}
+          *${{ github.workflow }}*
           Репозиторий: \`${{ github.repository }}\`
           Коммит: [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
           
