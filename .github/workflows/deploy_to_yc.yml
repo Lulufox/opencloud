@@ -12,7 +12,7 @@ jobs:
     name: Copy infra
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
 
     - name: Create projects directory
       uses: appleboy/ssh-action@master
@@ -21,11 +21,11 @@ jobs:
         username: ${{ secrets.USER }}
         key: ${{ secrets.SSH_KEY }}
         script: |
-          sudo rm -rf opencloud
-          mkdir -p opencloud
-          chmod -R 777 opencloud
+          set -e
+          sudo rm -rf opencloud || true
           sudo mkdir -p opencloud/{config,data}
           sudo chown -R 1000:1000 opencloud
+          sudo chmod -R 755 opencloud
 
   deploy:
     runs-on: ubuntu-latest
@@ -34,31 +34,50 @@ jobs:
     outputs:
       container_status: ${{ steps.get_status.outputs.status }}
     steps:
-    - name: Deploy via SSH
-      uses: appleboy/ssh-action@master
+    - name: Copy compose files
+      uses: appleboy/scp-action@master
       with:
         host: ${{ secrets.HOST }}
         username: ${{ secrets.USER }}
         key: ${{ secrets.SSH_KEY }}
-        script: |
-          cd opencloud
-
-          # Останавливаем только работающие контейнеры (если они есть)
-          if [ "$(sudo docker ps -q)" ]; then
-            sudo docker stop $(sudo docker ps -q)
-          fi
-
-          # Удаляем только остановленные контейнеры (если они есть)
-          if [ "$(sudo docker ps -a --filter status=exited -q)" ]; then
-            sudo docker rm -v $(sudo docker ps -a --filter status=exited -q)
-          fi
-
-          sudo docker compose up -d
+        source: "docker-compose.yml"
+        target: "opencloud/"
+    
+    - name: Deploy containers
+      uses: appleboy/ssh-action@master
+      with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            cd opencloud
+            
+            # Cleanup containers
+            if [ "$(sudo docker ps -q)" ]; then
+                sudo docker stop $(sudo docker ps -q)
+            fi
+            
+            if [ "$(sudo docker ps -aq --filter status=exited)" ]; then
+                sudo docker rm -v $(sudo docker ps -aq --filter status=exited)
+            fi
+            
+            # Cleanup unused images
+            sudo docker image prune -af || true
+            
+            # Verify compose file
+            if [ ! -f docker-compose.yml ]; then
+                echo "::error::docker-compose.yml not found!"
+                exit 1
+            fi
+            
+            sudo docker compose pull --quiet
+            sudo docker compose up -d --build
 
     - name: Get container status
       id: get_status
       run: |
-        sleep 10s
+        sleep 15s
         mkdir -p ~/.ssh
         echo "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy_key
         chmod 600 ~/.ssh/deploy_key
@@ -76,6 +95,7 @@ jobs:
   send_message:
     runs-on: ubuntu-latest
     needs: deploy
+    if: always()
     steps:
     - name: send message
       uses: appleboy/telegram-action@master
@@ -84,11 +104,11 @@ jobs:
         token: ${{ secrets.TELEGRAM_TOKEN }}
         format: markdown
         message: |
-          ${{ github.workflow }} успешно выполнен!
-          Проект: ${{ github.repository }}
+          *${{ github.workflow }}* - ${{ job.status }}
+          Репозиторий: \`${{ github.repository }}\`
+          Коммит: [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
           
-          Статус контейнеров:
           ```
-          ${{ needs.deploy.outputs.container_status }}
+          ${{ needs.deploy.outputs.container_status || 'Не удалось получить статус' }}
           ```
           
