@@ -43,8 +43,15 @@ jobs:
         script: |
           cd opencloud
 
-          sudo docker stop $(sudo docker ps -q) || true
-          sudo docker rm -v $(sudo docker ps --filter status=exited -q)
+          # Останавливаем только работающие контейнеры (если они есть)
+          if [ "$(sudo docker ps -q)" ]; then
+            sudo docker stop $(sudo docker ps -q)
+          fi
+
+          # Удаляем только остановленные контейнеры (если они есть)
+          if [ "$(sudo docker ps -a --filter status=exited -q)" ]; then
+            sudo docker rm -v $(sudo docker ps -a --filter status=exited -q)
+          fi
 
           sudo docker compose up -d
 
