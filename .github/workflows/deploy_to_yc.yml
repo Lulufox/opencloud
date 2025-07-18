@@ -42,10 +42,9 @@ jobs:
         key: ${{ secrets.SSH_KEY }}
         script: |
           cd opencloud
-          sudo chown -R 999:999 opencloud
 
           sudo docker stop $(sudo docker ps -q) || true
-          sudo docker rm -v $(docker ps --filter status=exited -q)
+          sudo docker rm -v $(sudo docker ps --filter status=exited -q)
 
           sudo docker compose up -d
 
