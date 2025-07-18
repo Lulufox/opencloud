@@ -1,0 +1,88 @@
+name: Deploy to YC
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  create_project_directory:
+    name: Copy infra
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Create projects directory
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USER }}
+        key: ${{ secrets.SSH_KEY }}
+        script: |
+          sudo rm -rf opencloud
+          mkdir -p opencloud
+          chmod -R 777 opencloud
+          sudo mkdir -p opencloud/{config,data}
+          sudo chown -R 1000:1000 opencloud
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs:
+      - create_project_directory
+    outputs:
+      container_status: ${{ steps.get_status.outputs.status }}
+    steps:
+    - name: Deploy via SSH
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USER }}
+        key: ${{ secrets.SSH_KEY }}
+        script: |
+          cd opencloud
+          sudo chown -R 999:999 opencloud
+
+          sudo docker stop $(sudo docker ps -q) || true
+          sudo docker rm -v $(docker ps --filter status=exited -q)
+          
+          sudo docker-compose up -d
+
+    - name: Get container status
+      id: get_status
+      run: |
+        sleep 10s
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        status=$(ssh -o StrictHostKeyChecking=no \
+        -i ~/.ssh/deploy_key \
+        ${{ secrets.USER }}@${{ secrets.HOST }} \
+        "sudo docker ps -a --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'")
+        
+        # Format the output with proper line breaks
+        formatted_status=$(echo "$status" | awk 'NR>1 {print $0}' | sed 's/%0A/\n/g')
+        echo "status<<EOF" >> $GITHUB_OUTPUT
+        echo "$formatted_status" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+  send_message:
+    runs-on: ubuntu-latest
+    needs: deploy
+    steps:
+    - name: send message
+      uses: appleboy/telegram-action@master
+      with:
+        to: ${{ secrets.TELEGRAM_TO }}
+        token: ${{ secrets.TELEGRAM_TOKEN }}
+        format: markdown
+        message: |
+          ${{ github.workflow }} успешно выполнен!
+          Проект: ${{ github.repository }}
+          
+          Статус контейнеров:
+          ```
+          ${{ needs.deploy.outputs.container_status }}
+          ```
+          
