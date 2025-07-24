@@ -9,7 +9,7 @@ on:
 
 jobs:
   create_project_directory:
-    name: Copy infra
+    name: Infra
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
@@ -26,6 +26,18 @@ jobs:
           sudo mkdir -p opencloud/{config,data,infra}
           sudo chown -R 1000:1000 opencloud
           sudo chmod -R 755 opencloud
+    
+    - name: Upgrade Docker
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USER }}
+        key: ${{ secrets.SSH_KEY }}
+        script: |
+          sudo apt-get update
+          sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+          sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
 
   deploy:
     runs-on: ubuntu-latest
@@ -72,8 +84,8 @@ jobs:
                 exit 1
             fi
             
-            sudo docker compose pull --quiet
-            sudo docker compose up -d --build
+            sudo docker-compose pull
+            sudo docker-compose up -d --build
 
     - name: Get container status
       id: get_status
