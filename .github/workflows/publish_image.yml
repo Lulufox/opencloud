@@ -25,6 +25,8 @@ jobs:
     - name: Generate assets
       run: |
         echo "Generating assets"
+        export DISABLE_ESLINT_PLUGIN=true
+        export GENERATE_SOURCEMAP=false
         make generate
 
     - name: Set up Docker Buildx
