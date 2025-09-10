@@ -31,6 +31,8 @@ assets/identifier/static/icon-lilac.svg: pnpm-build
 pnpm-build: node_modules
 	#pnpm lint #TODO: activate
 	#pnpm test #TODO: activate
+	export DISABLE_ESLINT_PLUGIN=true
+	export GENERATE_SOURCEMAP=false
 	pnpm build
 
 .PHONY: node_modules
