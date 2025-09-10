@@ -25,6 +25,7 @@ jobs:
     - name: Generate assets
       run: |
         echo "Generating assets"
+        npm install -g @craco/craco
         export DISABLE_ESLINT_PLUGIN=true
         export GENERATE_SOURCEMAP=false
         make generate
