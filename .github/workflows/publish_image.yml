@@ -87,7 +87,4 @@ jobs:
 
           ❌ Pipeline execution failed!
 
-          Error occurred during Docker image build/push
-          Repository: `${{ secrets.DOCKERHUB_USERNAME }}/iliadacloud:latest`
-          Status: Failed
-          Commit: ${{ github.sha }}
+          [View failed workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
