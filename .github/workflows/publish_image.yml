@@ -27,6 +27,12 @@ jobs:
         echo "Generating assets"
         make generate
 
+    - name: Init configs
+      run: |
+        echo "Configs generation"
+        make -C opencloud build
+        opencloud/bin/opencloud init
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
