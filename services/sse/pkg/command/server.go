@@ -3,14 +3,16 @@ package command
 import (
 	"context"
 	"fmt"
+	"os/signal"
 
-	"github.com/oklog/run"
 	"github.com/opencloud-eu/reva/v2/pkg/events"
 	"github.com/opencloud-eu/reva/v2/pkg/events/stream"
 	"github.com/urfave/cli/v2"
 
 	"github.com/opencloud-eu/opencloud/pkg/config/configlog"
+	"github.com/opencloud-eu/opencloud/pkg/generators"
 	"github.com/opencloud-eu/opencloud/pkg/log"
+	"github.com/opencloud-eu/opencloud/pkg/runner"
 	"github.com/opencloud-eu/opencloud/pkg/tracing"
 	"github.com/opencloud-eu/opencloud/services/sse/pkg/config"
 	"github.com/opencloud-eu/opencloud/services/sse/pkg/config/parser"
@@ -33,26 +35,30 @@ func Server(cfg *config.Config) *cli.Command {
 			return configlog.ReturnFatal(parser.ParseConfig(cfg))
 		},
 		Action: func(c *cli.Context) error {
-			var (
-				gr          = run.Group{}
-				ctx, cancel = context.WithCancel(c.Context)
-				logger      = log.NewLogger(
-					log.Name(cfg.Service.Name),
-					log.Level(cfg.Log.Level),
-					log.Pretty(cfg.Log.Pretty),
-					log.Color(cfg.Log.Color),
-					log.File(cfg.Log.File),
-				)
+			var cancel context.CancelFunc
+			if cfg.Context == nil {
+				cfg.Context, cancel = signal.NotifyContext(context.Background(), runner.StopSignals...)
+				defer cancel()
+			}
+			ctx := cfg.Context
+
+			logger := log.NewLogger(
+				log.Name(cfg.Service.Name),
+				log.Level(cfg.Log.Level),
+				log.Pretty(cfg.Log.Pretty),
+				log.Color(cfg.Log.Color),
+				log.File(cfg.Log.File),
 			)
-			defer cancel()
 
 			tracerProvider, err := tracing.GetServiceTraceProvider(cfg.Tracing, cfg.Service.Name)
 			if err != nil {
 				return err
 			}
 
+			gr := runner.NewGroup()
 			{
-				natsStream, err := stream.NatsFromConfig(cfg.Service.Name, true, stream.NatsConfig(cfg.Events))
+				connName := generators.GenerateConnectionName(cfg.Service.Name, generators.NTypeBus)
+				natsStream, err := stream.NatsFromConfig(connName, true, stream.NatsConfig(cfg.Events))
 				if err != nil {
 					return err
 				}
@@ -69,9 +75,7 @@ func Server(cfg *config.Config) *cli.Command {
 					return err
 				}
 
-				gr.Add(server.Run, func(_ error) {
-					cancel()
-				})
+				gr.Add(runner.NewGoMicroHttpServerRunner(cfg.Service.Name+".http", server))
 			}
 
 			{
@@ -85,13 +89,18 @@ func Server(cfg *config.Config) *cli.Command {
 					return err
 				}
 
-				gr.Add(debugServer.ListenAndServe, func(_ error) {
-					_ = debugServer.Shutdown(ctx)
-					cancel()
-				})
+				gr.Add(runner.NewGolangHttpServerRunner(cfg.Service.Name+".debug", debugServer))
 			}
 
-			return gr.Run()
+			grResults := gr.Run(ctx)
+
+			// return the first non-nil error found in the results
+			for _, grResult := range grResults {
+				if grResult.RunnerError != nil {
+					return grResult.RunnerError
+				}
+			}
+			return nil
 		},
 	}
 }

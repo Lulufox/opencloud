@@ -3,13 +3,15 @@ package command
 import (
 	"context"
 	"fmt"
+	"os/signal"
 
-	"github.com/oklog/run"
 	"github.com/opencloud-eu/reva/v2/pkg/events/stream"
 	"github.com/urfave/cli/v2"
 
 	"github.com/opencloud-eu/opencloud/pkg/config/configlog"
+	"github.com/opencloud-eu/opencloud/pkg/generators"
 	"github.com/opencloud-eu/opencloud/pkg/log"
+	"github.com/opencloud-eu/opencloud/pkg/runner"
 	"github.com/opencloud-eu/opencloud/pkg/service/grpc"
 	"github.com/opencloud-eu/opencloud/pkg/tracing"
 	"github.com/opencloud-eu/opencloud/pkg/version"
@@ -32,18 +34,20 @@ func Server(cfg *config.Config) *cli.Command {
 			return configlog.ReturnFatal(parser.ParseConfig(cfg))
 		},
 		Action: func(c *cli.Context) error {
-			var (
-				gr          = run.Group{}
-				ctx, cancel = context.WithCancel(c.Context)
-				logger      = log.NewLogger(
-					log.Name(cfg.Service.Name),
-					log.Level(cfg.Log.Level),
-					log.Pretty(cfg.Log.Pretty),
-					log.Color(cfg.Log.Color),
-					log.File(cfg.Log.File),
-				).SubloggerWithRequestID(ctx)
-			)
-			defer cancel()
+			var cancel context.CancelFunc
+			if cfg.Context == nil {
+				cfg.Context, cancel = signal.NotifyContext(context.Background(), runner.StopSignals...)
+				defer cancel()
+			}
+			ctx := cfg.Context
+
+			logger := log.NewLogger(
+				log.Name(cfg.Service.Name),
+				log.Level(cfg.Log.Level),
+				log.Pretty(cfg.Log.Pretty),
+				log.Color(cfg.Log.Color),
+				log.File(cfg.Log.File),
+			).SubloggerWithRequestID(ctx)
 
 			traceProvider, err := tracing.GetServiceTraceProvider(cfg.Tracing, cfg.Service.Name)
 			if err != nil {
@@ -55,6 +59,7 @@ func Server(cfg *config.Config) *cli.Command {
 				return err
 			}
 
+			gr := runner.NewGroup()
 			{
 				grpcClient, err := grpc.NewClient(
 					append(
@@ -97,14 +102,13 @@ func Server(cfg *config.Config) *cli.Command {
 					return err
 				}
 
-				gr.Add(svc.Run, func(_ error) {
-					cancel()
-				})
+				gr.Add(runner.NewGoMicroGrpcServerRunner(cfg.Service.Name+".grpc", svc))
 			}
 
 			{
 
-				bus, err := stream.NatsFromConfig(cfg.Service.Name, false, stream.NatsConfig(cfg.Events))
+				connName := generators.GenerateConnectionName(cfg.Service.Name, generators.NTypeBus)
+				bus, err := stream.NatsFromConfig(connName, false, stream.NatsConfig(cfg.Events))
 				if err != nil {
 					return err
 				}
@@ -114,9 +118,11 @@ func Server(cfg *config.Config) *cli.Command {
 					return err
 				}
 
-				gr.Add(eventSvc.Run, func(_ error) {
-					cancel()
-				})
+				gr.Add(runner.New(cfg.Service.Name+".svc", func() error {
+					return eventSvc.Run()
+				}, func() {
+					eventSvc.Close()
+				}))
 			}
 
 			{
@@ -130,13 +136,18 @@ func Server(cfg *config.Config) *cli.Command {
 					return err
 				}
 
-				gr.Add(debugServer.ListenAndServe, func(_ error) {
-					_ = debugServer.Shutdown(ctx)
-					cancel()
-				})
+				gr.Add(runner.NewGolangHttpServerRunner(cfg.Service.Name+".debug", debugServer))
 			}
 
-			return gr.Run()
+			grResults := gr.Run(ctx)
+
+			// return the first non-nil error found in the results
+			for _, grResult := range grResults {
+				if grResult.RunnerError != nil {
+					return grResult.RunnerError
+				}
+			}
+			return nil
 		},
 	}
 }

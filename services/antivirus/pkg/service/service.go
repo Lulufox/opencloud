@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/opencloud-eu/reva/v2/pkg/bytesize"
@@ -20,6 +21,7 @@ import (
 	"github.com/opencloud-eu/reva/v2/pkg/rhttp"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/opencloud-eu/opencloud/pkg/generators"
 	"github.com/opencloud-eu/opencloud/pkg/log"
 	"github.com/opencloud-eu/opencloud/services/antivirus/pkg/config"
 	"github.com/opencloud-eu/opencloud/services/antivirus/pkg/scanners"
@@ -53,7 +55,15 @@ func NewAntivirus(cfg *config.Config, logger log.Logger, tracerProvider trace.Tr
 		return Antivirus{}, err
 	}
 
-	av := Antivirus{config: cfg, log: logger, tracerProvider: tracerProvider, scanner: scanner, client: rhttp.GetHTTPClient(rhttp.Insecure(true))}
+	av := Antivirus{
+		config:         cfg,
+		log:            logger,
+		tracerProvider: tracerProvider,
+		scanner:        scanner,
+		client:         rhttp.GetHTTPClient(rhttp.Insecure(true)),
+		stopCh:         make(chan struct{}, 1),
+		stopped:        new(atomic.Bool),
+	}
 
 	switch mode := cfg.MaxScanSizeMode; mode {
 	case config.MaxScanSizeModeSkip, config.MaxScanSizeModePartial:
@@ -90,7 +100,9 @@ type Antivirus struct {
 	maxScanSize    uint64
 	tracerProvider trace.TracerProvider
 
-	client *http.Client
+	client  *http.Client
+	stopCh  chan struct{}
+	stopped *atomic.Bool
 }
 
 // Run runs the service
@@ -114,7 +126,8 @@ func (av Antivirus) Run() error {
 		av.config.Events.TLSInsecure = false
 	}
 
-	natsStream, err := stream.NatsFromConfig(av.config.Service.Name, false, stream.NatsConfig(av.config.Events))
+	connName := generators.GenerateConnectionName(av.config.Service.Name, generators.NTypeBus)
+	natsStream, err := stream.NatsFromConfig(connName, false, stream.NatsConfig(av.config.Events))
 	if err != nil {
 		return err
 	}
@@ -125,28 +138,50 @@ func (av Antivirus) Run() error {
 	}
 
 	wg := sync.WaitGroup{}
-	for i := 0; i < av.config.Workers; i++ {
+	for range av.config.Workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for e := range ch {
-				err := av.processEvent(e, natsStream)
-				if err != nil {
-					switch {
-					case errors.Is(err, ErrFatal):
-						av.log.Fatal().Err(err).Msg("fatal error - exiting")
-					case errors.Is(err, ErrEvent):
-						av.log.Error().Err(err).Msg("continuing")
-					default:
-						av.log.Fatal().Err(err).Msg("unknown error - exiting")
+
+		EventLoop:
+			for {
+				select {
+				case e, ok := <-ch:
+					if !ok {
+						break EventLoop
 					}
+
+					err := av.processEvent(e, natsStream)
+					if err != nil {
+						switch {
+						case errors.Is(err, ErrFatal):
+							av.log.Fatal().Err(err).Msg("fatal error - exiting")
+						case errors.Is(err, ErrEvent):
+							av.log.Error().Err(err).Msg("continuing")
+						default:
+							av.log.Fatal().Err(err).Msg("unknown error - exiting")
+						}
+					}
+
+					if av.stopped.Load() {
+						break EventLoop
+					}
+				case <-av.stopCh:
+					break EventLoop
 				}
 			}
 		}()
 	}
+
 	wg.Wait()
 
 	return nil
+}
+
+func (av Antivirus) Close() {
+	if av.stopped.CompareAndSwap(false, true) {
+		close(av.stopCh)
+	}
 }
 
 func (av Antivirus) processEvent(e events.Event, s events.Publisher) error {
